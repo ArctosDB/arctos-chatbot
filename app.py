@@ -59,7 +59,7 @@ FIELD_TO_ARCTOS_PARAM = {
     "any_geog": "any_geog", "country": "country", "state": "state_prov", "state_province": "state_prov",
     "part": "part_search", "part search": "part_search", "collector": "collector",
     "media type": "media_type", "type status": "type_status",
-    "date": "verbatim_date", "year": "verbatim_date",
+    "date": "verbatim_date", "year": "verbatim_date", "verbatim_date" : "verbatim_date",
     "has tissue": "is_tissue", "scientific_name_match": "scientific_name_match_type",
     "agent role": "coll_role", "guid_prefix": "guid_prefix", "institution": "guid_prefix"
 }
@@ -123,10 +123,13 @@ def generate_arctos_search_url(fields):
     base_url = "https://arctos.database.museum/search.cfm"
     params = {}
 
-    if "institution" in fields:
-        inst = fields["institution"].lower().strip()
-        taxon = fields.get("taxon_name", "").lower().strip()
+    inst = fields.get("institution")
+    inst = inst.lower().strip() if isinstance(inst, str) else ""
+    if inst:
+        taxon = fields.get("taxon_name", "")
+        taxon = taxon.lower().strip() if isinstance(taxon, str) else ""
         taxon = TAXON_CATEGORY_MAP.get(taxon, p.singular_noun(taxon) or taxon)
+
         if inst in institution_to_prefix:
             prefixes = institution_to_prefix[inst]
             matched = [pfx for pfx in prefixes if taxon and taxon in pfx.lower()] or prefixes
@@ -135,7 +138,9 @@ def generate_arctos_search_url(fields):
     for user_field, arctos_field in FIELD_TO_ARCTOS_PARAM.items():
         if user_field != "institution" and user_field in fields:
             value = fields[user_field]
-            if value and not (user_field == "location" and fields.get("institution", "").lower() in str(value).lower()):
+            institution_val = fields.get("institution")
+            institution_str = institution_val.lower() if isinstance(institution_val, str) else ""
+            if value and not (user_field == "location" and institution_str in str(value).lower()):
                 params[arctos_field] = value
 
     return f"{base_url}?{urlencode(params)}"
