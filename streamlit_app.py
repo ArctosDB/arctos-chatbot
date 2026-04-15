@@ -13,7 +13,7 @@ st.set_page_config(page_title="Arctos Querybot", page_icon="🦎", layout="cente
 st.title("🦎 Arctos Querybot")
 st.caption("Enter a natural-language query to search the Arctos collections database.")
 
-CSV_PATH = "_portals (2).csv"
+CSV_PATH = "_portals.csv"
 
 @st.cache_resource
 def load_pipeline():

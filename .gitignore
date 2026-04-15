@@ -1,0 +1,16 @@
+# Virtual environment
+Lib/
+Scripts/
+share/
+etc/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+
+# Archives
+*.zip

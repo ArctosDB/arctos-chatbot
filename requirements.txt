@@ -1,3 +1,4 @@
 ﻿streamlit
 flashtext
 google-genai
+flashtext
