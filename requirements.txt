@@ -1,7 +1,0 @@
-streamlit
-openai
-requests
-python-dotenv
-inflect
-gspread
-oauth2client
