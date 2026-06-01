@@ -27,6 +27,10 @@ entity_extractor, classifier, url_builder = load_pipeline()
 @st.cache_resource
 def load_llm():
     """Returns LLMExtractor or None if API key is missing."""
+    # Load API key from Streamlit secrets, falling back to environment variable
+    api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+    if api_key:
+        os.environ["GEMINI_API_KEY"] = api_key
     try:
         return LLMExtractor()
     except EnvironmentError:
@@ -45,23 +49,9 @@ with st.sidebar:
     classifier.threshold = threshold
 
     st.divider()
-    st.subheader("Gemini API Key")
-    api_key_input = st.text_input(
-        "GEMINI_API_KEY", type="password",
-        value=os.environ.get("GEMINI_API_KEY", ""),
-        help="Required only for LLM-routed queries."
-    )
-    if api_key_input:
-        os.environ["GEMINI_API_KEY"] = api_key_input
-        if llm is None:
-            # Re-attempt initialisation now that key is set
-            try:
-                llm = LLMExtractor()
-                st.success("LLM ready ✓")
-            except Exception as e:
-                st.error(f"LLM init failed: {e}")
-        else:
-            st.success("LLM ready ✓")
+    if llm is not None:
+        st.success("LLM ready ✓")
+        st.caption("💡 No need to add your own LLM key. For demo purposes, an API key has been preloaded.")
     else:
         st.warning("No API key — LLM route unavailable.")
 
@@ -101,7 +91,7 @@ if run and query:
             fields["guid_prefix"] = ",".join(sorted(guids))
     else:
         if llm is None:
-            error = "LLM route required but no API key is set. Add your Gemini key in the sidebar."
+            error = "LLM route required but no API key is configured. Set GEMINI_API_KEY in Streamlit secrets."
         else:
             with st.spinner("Calling Gemini…"):
                 try:
