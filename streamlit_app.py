@@ -6,6 +6,8 @@ from app import (
     QuerybotClassifier,
     ArctosURLBuilder,
     LLMExtractor,
+    DEFAULT_PRIMARY_MODEL,
+    DEFAULT_FALLBACK_MODEL,
 )
 
 st.set_page_config(page_title="Arctos Querybot", page_icon="🦎", layout="centered")
@@ -26,11 +28,28 @@ entity_extractor, classifier, url_builder = load_pipeline()
 
 @st.cache_resource
 def load_llm():
-    """Returns LLMExtractor or None if API key is missing."""
-    # Load API key from Streamlit secrets, falling back to environment variable
+    """
+    Pushes secrets into env vars, then returns an LLMExtractor (or None).
+
+    Reads from st.secrets (Streamlit Cloud secrets tab):
+        GEMINI_API_KEY      — required for LLM calls
+        LLM_PRIMARY_MODEL   — primary model name (optional, has a default)
+        LLM_FALLBACK_MODEL  — fallback model name (optional, has a default)
+    """
+    # API key
     api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     if api_key:
         os.environ["GEMINI_API_KEY"] = api_key
+
+    # Model names — only override if explicitly set in secrets
+    primary_model = st.secrets.get("LLM_PRIMARY_MODEL", "")
+    if primary_model:
+        os.environ["LLM_PRIMARY_MODEL"] = primary_model
+
+    fallback_model = st.secrets.get("LLM_FALLBACK_MODEL", "")
+    if fallback_model:
+        os.environ["LLM_FALLBACK_MODEL"] = fallback_model
+
     try:
         return LLMExtractor()
     except EnvironmentError:
@@ -51,7 +70,9 @@ with st.sidebar:
     st.divider()
     if llm is not None:
         st.success("LLM ready ✓")
-        st.caption("💡 No need to add your own LLM key. For demo purposes, an API key has been preloaded.")
+        with st.expander("Model info"):
+            st.caption(f"**Primary:** `{llm.primary_model}`")
+            st.caption(f"**Fallback:** `{llm.fallback_model}`")
     else:
         st.warning("No API key — LLM route unavailable.")
 
@@ -79,6 +100,7 @@ if run and query:
     # Build fields dict
     fields: dict = {}
     error: str | None = None
+    usage: dict = {}
 
     if route == "local":
         guids: set = set()
@@ -114,13 +136,22 @@ if run and query:
         st.code(url, language=None)
         st.link_button("Open in Arctos ↗", url)
 
-        # Cost (LLM route only)
-        if route == "llm" and "usage" in dir():
+        # Cost & model info (LLM route only)
+        if route == "llm" and usage:
+            model_label = usage.get("model_used", "unknown")
+            fallback_note = " ⚠ fallback" if usage.get("fallback_used") else ""
             st.caption(
                 f"🪙 {usage['input_tokens']} input tokens · "
                 f"{usage['output_tokens']} output tokens · "
-                f"**${usage['cost_usd']:.6f}**"
+                f"**${usage['cost_usd']:.6f}** · "
+                f"model: `{model_label}`{fallback_note}"
             )
+            if usage.get("fallback_used"):
+                st.warning(
+                    f"Primary model (`{llm.primary_model}`) failed — "
+                    f"fell back to `{llm.fallback_model}`.\n\n"
+                    f"Primary error: {usage['primary_error']}"
+                )
 
         # Extracted fields
         if fields:
