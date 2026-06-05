@@ -70,7 +70,6 @@ with st.sidebar:
     st.divider()
     if llm is not None:
         st.success("LLM ready ✓")
-        st.caption("💡 No need to add your own LLM key. For demo purposes, an API key has been preloaded.")
         with st.expander("Model info"):
             st.caption(f"**Primary:** `{llm.primary_model}`")
             st.caption(f"**Fallback:** `{llm.fallback_model}`")
