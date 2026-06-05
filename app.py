@@ -341,8 +341,15 @@ class ArctosURLBuilder:
 
 
 # =============================================================================
-# LLM EXTRACTOR  (Gemini 3.1 Flash-Lite Preview)
+# LLM EXTRACTOR
 # =============================================================================
+# Model names are read from environment variables (set via Streamlit secrets):
+#   LLM_PRIMARY_MODEL   — primary model to use (required)
+#   LLM_FALLBACK_MODEL  — fallback model if the primary call fails (optional)
+#
+# Defaults (used when the env vars are not set, e.g. running locally):
+DEFAULT_PRIMARY_MODEL  = "gemini-3.1-flash-lite-preview"
+DEFAULT_FALLBACK_MODEL = "gemini-2.0-flash-lite"
 
 # JSON schema we constrain Gemini to — all fields are optional strings.
 # Using the flat column names as keys so the output feeds directly into
@@ -436,9 +443,20 @@ Rules:
 
 class LLMExtractor:
     """
-    Calls Gemini 3.1 Flash-Lite Preview to extract structured search fields
-    from a free-text query. Returns a dict ready for ArctosURLBuilder.
+    Calls the Gemini API to extract structured search fields from a free-text
+    query. Returns a dict ready for ArctosURLBuilder.
+
+    The model used is controlled by two environment variables (set via
+    Streamlit secrets):
+        LLM_PRIMARY_MODEL   — tried first
+        LLM_FALLBACK_MODEL  — used automatically if the primary call fails
+
+    If neither variable is set the DEFAULT_* constants above are used.
     """
+
+    # Pricing for gemini-3.1-flash-lite-preview (USD per million tokens)
+    INPUT_COST_PER_M  = 0.25
+    OUTPUT_COST_PER_M = 1.50
 
     def __init__(self):
         import os
@@ -450,18 +468,26 @@ class LLMExtractor:
                 "GEMINI_API_KEY environment variable is not set."
             )
         self._client = genai.Client(api_key=api_key)
-        self._model_name = "gemini-3.1-flash-lite-preview"
 
-    # Pricing for gemini-3.1-flash-lite-preview (USD per million tokens)
-    INPUT_COST_PER_M  = 0.25
-    OUTPUT_COST_PER_M = 1.50
+        # Read model names from env vars set by Streamlit secrets, with sane defaults
+        self._primary_model  = os.environ.get("LLM_PRIMARY_MODEL",  DEFAULT_PRIMARY_MODEL)
+        self._fallback_model = os.environ.get("LLM_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL)
 
-    def extract(self, query: str) -> tuple[dict, dict]:
+    @property
+    def primary_model(self) -> str:
+        return self._primary_model
+
+    @property
+    def fallback_model(self) -> str:
+        return self._fallback_model
+
+    def _call_model(self, model_name: str, query: str) -> tuple[dict, dict]:
+        """Make a single Gemini API call and return (fields, usage)."""
         import json
         from google.genai import types
 
         response = self._client.models.generate_content(
-            model=self._model_name,
+            model=model_name,
             contents=query,
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_PROMPT,
@@ -474,7 +500,7 @@ class LLMExtractor:
         try:
             extracted = json.loads(raw)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Gemini returned invalid JSON: {e}\nRaw: {raw}")
+            raise ValueError(f"Model returned invalid JSON: {e}\nRaw: {raw}")
 
         # Strip out any empty-string values the model may have included
         fields = {k: v for k, v in extracted.items() if v and str(v).strip()}
@@ -491,9 +517,32 @@ class LLMExtractor:
             "input_tokens":  input_tokens,
             "output_tokens": output_tokens,
             "cost_usd":      cost_usd,
+            "model_used":    model_name,
         }
 
         return fields, usage
+
+    def extract(self, query: str) -> tuple[dict, dict]:
+        """
+        Extract fields from query, trying the primary model first and
+        falling back to the fallback model on any exception.
+        """
+        try:
+            return self._call_model(self._primary_model, query)
+        except Exception as primary_error:
+            if self._fallback_model and self._fallback_model != self._primary_model:
+                try:
+                    fields, usage = self._call_model(self._fallback_model, query)
+                    usage["fallback_used"] = True
+                    usage["primary_error"] = str(primary_error)
+                    return fields, usage
+                except Exception as fallback_error:
+                    raise RuntimeError(
+                        f"Both models failed.\n"
+                        f"Primary ({self._primary_model}): {primary_error}\n"
+                        f"Fallback ({self._fallback_model}): {fallback_error}"
+                    ) from fallback_error
+            raise
 
 
 if __name__ == "__main__":
@@ -563,6 +612,8 @@ if __name__ == "__main__":
             if llm_extractor is None:
                 try:
                     llm_extractor = LLMExtractor()
+                    print(f"   Primary model : {llm_extractor.primary_model}")
+                    print(f"   Fallback model: {llm_extractor.fallback_model}")
                 except EnvironmentError as e:
                     print(f"   [LLM SKIPPED] {e}")
                     continue
@@ -574,6 +625,9 @@ if __name__ == "__main__":
                 url = url_builder.build(fields)
                 print(f"   Fields        : {fields}")
                 print(f"   URL           : {url}")
+                print(f"   Model used    : {usage['model_used']}")
+                if usage.get("fallback_used"):
+                    print(f"   ⚠ Fallback used! Primary error: {usage['primary_error']}")
                 print(f"   Tokens        : {usage['input_tokens']} in / {usage['output_tokens']} out")
                 print(f"   Cost          : ${usage['cost_usd']:.6f}")
             except Exception as e:
