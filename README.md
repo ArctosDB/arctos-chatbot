@@ -5,3 +5,4 @@ This AI-powered Streamlit chatbot enables users to query the Arctos biodiversity
 
 Built as part of a UC Davis MSBA practicum project in collaboration with the **Museum of Vertebrate Zoology (MVZ)** and the **Arctos Consortium**, the tool significantly simplifies search workflows for curators, researchers, and external users.
 
+Note that this has been primarily tested on biological specimen. At this stage, cultural specimen may not be correctly serviced.
