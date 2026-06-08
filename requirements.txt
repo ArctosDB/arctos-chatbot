@@ -1,4 +1,5 @@
-﻿streamlit
+streamlit
 flashtext
 google-genai
-flashtext
+gspread
+google-auth
