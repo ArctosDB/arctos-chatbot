@@ -1,5 +1,9 @@
 import os
+import json
+import datetime
 import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
 
 from app import (
     ArctosEntityExtractor,
@@ -16,6 +20,79 @@ st.title("🦎 Arctos Querybot")
 st.caption("Enter a natural-language query to search the Arctos collections database.")
 
 CSV_PATH = "_portals.csv"
+
+# ── Google Sheets logging ─────────────────────────────────────────────────────
+
+SHEET_NAME      = "Arctos Querybot User Logs"
+WORKSHEET_NAME  = "Sheet1"
+SHEET_SCOPES    = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+# Column header order — must match the append_row call below
+SHEET_HEADERS = [
+    "timestamp",
+    "query",
+    "route",
+    "coverage",
+    "output_url",
+    "extracted_fields",
+    "feedback",       # 👍 / 👎 / blank
+    "comment",        # free-text, optional
+]
+
+@st.cache_resource
+def get_worksheet():
+    """Authenticate and return the target worksheet (or None on failure)."""
+    try:
+        creds_dict = dict(st.secrets["GOOGLE_CREDENTIALS"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SHEET_SCOPES)
+        client = gspread.authorize(creds)
+        sheet = client.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
+
+        # Write header row if the sheet is empty
+        if sheet.row_count == 0 or sheet.cell(1, 1).value != "timestamp":
+            sheet.insert_row(SHEET_HEADERS, index=1)
+
+        return sheet
+    except Exception as e:
+        # Logging is non-critical — don't crash the app if it fails
+        st.warning(f"⚠ Google Sheets logging unavailable: {e}")
+        return None
+
+def log_search(sheet, query, route, coverage, url, fields):
+    """Append one row for a search result (feedback columns left blank)."""
+    if sheet is None:
+        return
+    try:
+        sheet.append_row([
+            datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            query,
+            route,
+            f"{coverage*100:.1f}%",
+            url,
+            json.dumps(fields),
+            "",   # feedback — filled in later by update_feedback
+            "",   # comment  — filled in later by update_feedback
+        ])
+    except Exception:
+        pass  # Logging failures are silent so the user experience is unaffected
+
+def update_feedback(sheet, row_index, feedback, comment):
+    """Write feedback and comment into the last-appended row."""
+    if sheet is None:
+        return
+    try:
+        # feedback is column 7, comment is column 8
+        sheet.update_cell(row_index, 7, feedback)
+        sheet.update_cell(row_index, 8, comment)
+    except Exception:
+        pass
+
+worksheet = get_worksheet()
+
+# ── Pipeline setup ────────────────────────────────────────────────────────────
 
 @st.cache_resource
 def load_pipeline():
@@ -167,3 +244,35 @@ if run and query:
         if any(entities.values()):
             with st.expander("Entity matches (from preprocessor)"):
                 st.json(entities)
+
+        # ── Auto-log the search result ────────────────────────────────────────
+        # Append a row immediately; feedback columns start blank
+        log_search(worksheet, query, route, coverage, url, fields)
+        # Store the row index so feedback can update the same row later.
+        # get_all_values() includes the header, so last data row = len - 1 + 1 = len
+        if worksheet is not None:
+            try:
+                logged_row = len(worksheet.get_all_values())
+            except Exception:
+                logged_row = None
+        else:
+            logged_row = None
+
+        # ── Feedback section ──────────────────────────────────────────────────
+        st.divider()
+        st.subheader("Was this result helpful?")
+
+        col1, col2 = st.columns(2)
+        thumbs_up   = col1.button("👍 Yes")
+        thumbs_down = col2.button("👎 No")
+
+        comment = st.text_input(
+            "Optional comment",
+            placeholder="e.g. Wrong collection returned, missing specimens…",
+            key="feedback_comment",
+        )
+
+        if (thumbs_up or thumbs_down) and logged_row:
+            feedback = "👍" if thumbs_up else "👎"
+            update_feedback(worksheet, logged_row, feedback, comment)
+            st.success("Thanks for the feedback!")
