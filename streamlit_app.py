@@ -105,10 +105,15 @@ if run and query:
     if route == "local":
         guids: set = set()
         guids.update(entities["guid_prefixes"])
-        for inst in entities["institutions"]:
-            guids.update(entity_extractor.institution_to_guids.get(inst, set()))
-        for coll in entities["collections"]:
-            guids.update(entity_extractor.collection_to_guids.get(coll, set()))
+
+        # Only expand institutions/collections if no exact guid_prefix was matched.
+        # This prevents "MVZ:Herp" from ballooning into every MVZ collection.
+        if not guids:
+            for inst in entities["institutions"]:
+                guids.update(entity_extractor.institution_to_guids.get(inst, set()))
+            for coll in entities["collections"]:
+                guids.update(entity_extractor.collection_to_guids.get(coll, set()))
+
         if guids:
             fields["guid_prefix"] = ",".join(sorted(guids))
     else:
