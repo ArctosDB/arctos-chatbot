@@ -64,7 +64,7 @@ def get_worksheet():
 def log_search(sheet, query, route, coverage, url, fields):
     """Append one row for a search result (feedback columns left blank)."""
     if sheet is None:
-        return
+        return None
     try:
         sheet.append_row([
             datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -76,11 +76,13 @@ def log_search(sheet, query, route, coverage, url, fields):
             "",   # feedback — filled in later by update_feedback
             "",   # comment  — filled in later by update_feedback
         ])
+        # Return the row index of the row we just appended
+        return len(sheet.get_all_values())
     except Exception:
-        pass  # Logging failures are silent so the user experience is unaffected
+        return None
 
 def update_feedback(sheet, row_index, feedback, comment):
-    """Write feedback and comment into the last-appended row."""
+    """Write feedback and comment into the logged row."""
     if sheet is None:
         return
     try:
@@ -134,6 +136,17 @@ def load_llm():
 
 llm = load_llm()
 
+# ── Session state initialisation ─────────────────────────────────────────────
+# These keys persist across re-runs so the results page stays visible after
+# the feedback form is submitted.
+
+if "result" not in st.session_state:
+    st.session_state.result = None       # holds the last search result dict
+if "logged_row" not in st.session_state:
+    st.session_state.logged_row = None   # sheet row index for the last search
+if "feedback_submitted" not in st.session_state:
+    st.session_state.feedback_submitted = False
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Settings")
@@ -163,18 +176,14 @@ run = st.button("Search", type="primary", disabled=not query)
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 if run and query:
+    # A new search resets feedback state
+    st.session_state.feedback_submitted = False
+
     classification = classifier.classify(query)
     route = classification["route"]
     coverage = classification["coverage"]
     entities = classification["entities"]
 
-    # Route badge
-    if route == "local":
-        st.success(f"**Route: LOCAL** — {coverage*100:.0f}% entity coverage")
-    else:
-        st.info(f"**Route: LLM** — {coverage*100:.0f}% entity coverage")
-
-    # Build fields dict
     fields: dict = {}
     error: str | None = None
     usage: dict = {}
@@ -211,68 +220,87 @@ if run and query:
     else:
         url = url_builder.build(fields)
 
-        st.divider()
+        # Auto-log immediately; store the row index for later feedback update
+        logged_row = log_search(worksheet, query, route, coverage, url, fields)
 
-        # URL output
-        st.subheader("Generated URL")
-        st.code(url, language=None)
-        st.link_button("Open in Arctos ↗", url)
+        # Save everything to session state so the results survive re-runs
+        st.session_state.result = {
+            "route": route,
+            "coverage": coverage,
+            "entities": entities,
+            "fields": fields,
+            "url": url,
+            "usage": usage,
+        }
+        st.session_state.logged_row = logged_row
 
-        # Cost & model info (LLM route only)
-        if route == "llm" and usage:
-            model_label = usage.get("model_used", "unknown")
-            fallback_note = " ⚠ fallback" if usage.get("fallback_used") else ""
-            st.caption(
-                f"🪙 {usage['input_tokens']} input tokens · "
-                f"{usage['output_tokens']} output tokens · "
-                f"**${usage['cost_usd']:.6f}** · "
-                f"model: `{model_label}`{fallback_note}"
-            )
-            if usage.get("fallback_used"):
-                st.warning(
-                    f"Primary model (`{llm.primary_model}`) failed — "
-                    f"fell back to `{llm.fallback_model}`.\n\n"
-                    f"Primary error: {usage['primary_error']}"
-                )
+# ── Display results (from session state) ─────────────────────────────────────
+if st.session_state.result:
+    r = st.session_state.result
 
-        # Extracted fields
-        if fields:
-            st.subheader("Extracted fields")
-            st.json(fields)
+    st.divider()
 
-        # Entity details (always show)
-        if any(entities.values()):
-            with st.expander("Entity matches (from preprocessor)"):
-                st.json(entities)
+    # Route badge
+    if r["route"] == "local":
+        st.success(f"**Route: LOCAL** — {r['coverage']*100:.0f}% entity coverage")
+    else:
+        st.info(f"**Route: LLM** — {r['coverage']*100:.0f}% entity coverage")
 
-        # ── Auto-log the search result ────────────────────────────────────────
-        # Append a row immediately; feedback columns start blank
-        log_search(worksheet, query, route, coverage, url, fields)
-        # Store the row index so feedback can update the same row later.
-        # get_all_values() includes the header, so last data row = len - 1 + 1 = len
-        if worksheet is not None:
-            try:
-                logged_row = len(worksheet.get_all_values())
-            except Exception:
-                logged_row = None
-        else:
-            logged_row = None
+    # URL output
+    st.subheader("Generated URL")
+    st.code(r["url"], language=None)
+    st.link_button("Open in Arctos ↗", r["url"])
 
-        # ── Feedback section ──────────────────────────────────────────────────
-        st.divider()
-        st.subheader("Was this result helpful?")
-
-        col1, col2 = st.columns(2)
-        thumbs_up   = col1.button("👍 Yes")
-        thumbs_down = col2.button("👎 No")
-
-        comment = st.text_input(
-            "Optional comment",
-            placeholder="e.g. Wrong collection returned, missing specimens…",
-            key="feedback_comment",
+    # Cost & model info (LLM route only)
+    if r["route"] == "llm" and r["usage"]:
+        usage = r["usage"]
+        model_label = usage.get("model_used", "unknown")
+        fallback_note = " ⚠ fallback" if usage.get("fallback_used") else ""
+        st.caption(
+            f"🪙 {usage['input_tokens']} input tokens · "
+            f"{usage['output_tokens']} output tokens · "
+            f"**${usage['cost_usd']:.6f}** · "
+            f"model: `{model_label}`{fallback_note}"
         )
+        if usage.get("fallback_used"):
+            st.warning(
+                f"Primary model (`{llm.primary_model}`) failed — "
+                f"fell back to `{llm.fallback_model}`.\n\n"
+                f"Primary error: {usage['primary_error']}"
+            )
 
-        if (thumbs_up or thumbs_down) and logged_row:
-            feedback = "👍" if thumbs_up else "👎"
-            update_feedback(worksheet, logged_row, feedback, comment)
-            st.success("Thanks for the feedback!")
+    # Extracted fields
+    if r["fields"]:
+        st.subheader("Extracted fields")
+        st.json(r["fields"])
+
+    # Entity details
+    if any(r["entities"].values()):
+        with st.expander("Entity matches (from preprocessor)"):
+            st.json(r["entities"])
+
+    # ── Feedback section ──────────────────────────────────────────────────────
+    st.divider()
+
+    if st.session_state.feedback_submitted:
+        st.success("Thanks for the feedback!")
+    else:
+        st.subheader("Was this result helpful?")
+        with st.form("feedback_form"):
+            rating = st.radio(
+                "Rating",
+                options=["👍 Yes", "👎 No"],
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+            comment = st.text_input(
+                "Optional comment",
+                placeholder="e.g. Wrong collection returned, missing specimens…",
+            )
+            submitted = st.form_submit_button("Submit feedback")
+
+        if submitted:
+            feedback = "👍" if rating == "👍 Yes" else "👎"
+            update_feedback(worksheet, st.session_state.logged_row, feedback, comment)
+            st.session_state.feedback_submitted = True
+            st.rerun()
